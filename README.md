@@ -74,8 +74,8 @@ If `imagefs` metrics are missing, `IMG_EVICT` falls back to `nodefs` metrics.
 ```
 NODE                             USED    AVAIL    TOTAL   USE% IMG_TO_EVICT NODE_TO_EVICT IMG_TO_EVICT% NODE_TO_EVICT%
 node-1                           72.3G   101.7G   174.0G   42%  +8.1G       +6.4G       +5%           +4%
-node-1:imagefs                   18.9G    63.2G    82.1G   23%  - -
-node-1:rootfs                     5.4G    20.6G    26.0G   21%  - -
+node-2                             18.9G    63.2G    82.1G   23%  - -
+node-3                           5.4G    20.6G    26.0G   21%  - -
 ```
 
 With `--inodes`, `INODE_EVICT` shows headroom to the inode eviction threshold:
@@ -83,10 +83,8 @@ With `--inodes`, `INODE_EVICT` shows headroom to the inode eviction threshold:
 ```
 NODE                          INODE_USED  INODE_FREE INODE_TOTAL   USE% INODE_EVICT
 node-1                               1234      98765      99999     1%  +1234
-node-1:imagefs                        456      65432      70000     1%  - -
+node-2                               456      65432      70000     1%  - -
 ```
-
-Eviction thresholds (from `configz`) are included as columns in the same table.
 
 ## Notes
 
