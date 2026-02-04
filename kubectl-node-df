@@ -1,0 +1,136 @@
+#!/bin/sh
+set -eu
+
+if ! command -v kubectl >/dev/null 2>&1; then
+  echo "kubectl not found" >&2
+  exit 1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq not found" >&2
+  exit 1
+fi
+
+mode="bytes"
+if [ "${1:-}" = "-i" ] || [ "${1:-}" = "--inodes" ]; then
+  mode="inodes"
+  shift
+fi
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  cat <<'EOF'
+Usage: kubectl node df [--inodes] [NODE...]
+
+Shows node filesystem usage from kubelet Summary API.
+
+Options:
+  -i, --inodes  Show inode usage instead of bytes
+  -h, --help    Show this help
+
+Env:
+  NODE_DF_PARALLEL   Number of parallel requests (default: 6)
+
+Examples:
+  kubectl node df
+  kubectl node df node-1 node-2
+  kubectl node df --inodes
+EOF
+  exit 0
+fi
+
+to_gib() {
+  awk -v b="$1" 'BEGIN { if (b=="null" || b=="") { printf "-"; exit } printf "%.1f", b/1024/1024/1024 }'
+}
+
+to_pct() {
+  awk -v used="$1" -v total="$2" 'BEGIN { if (used=="null" || total=="null" || total==0 || used=="") { printf "-"; exit } printf "%.0f%%", (used*100)/total }'
+}
+
+to_num() {
+  awk -v n="$1" 'BEGIN { if (n=="null" || n=="") { printf "-"; exit } printf "%.0f", n }'
+}
+
+nodes="$*"
+if [ -z "${nodes}" ]; then
+  nodes=$(kubectl get nodes -o name | sed 's#node/##')
+fi
+
+parallel="${NODE_DF_PARALLEL:-6}"
+tmpdir="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmpdir"
+}
+trap cleanup EXIT INT TERM
+
+if [ "$mode" = "inodes" ]; then
+  printf "%-32s %12s %12s %12s %6s\n" "NODE" "INODE_USED" "INODE_FREE" "INODE_TOTAL" "USE%"
+else
+  printf "%-32s %8s %8s %8s %6s\n" "NODE" "USED" "AVAIL" "TOTAL" "USE%"
+fi
+
+printf "%s\n" $nodes | xargs -P "$parallel" -I{} sh -c '
+  kubectl get --raw "/api/v1/nodes/{}/proxy/stats/summary" > "'"$tmpdir"'"/"{}" 2>/dev/null || true
+'
+
+for node in $nodes; do
+  if [ ! -s "$tmpdir/$node" ]; then
+    printf "%-32s %8s %8s %8s %6s\n" "$node" "-" "-" "-" "-"
+    continue
+  fi
+  data="$(cat "$tmpdir/$node")"
+  if [ "$mode" = "inodes" ]; then
+    set -- $(printf "%s" "$data" | jq -r '.node.fs | "\(.inodesUsed) \(.inodesFree) \(.inodes)"')
+    used="$1"; avail="$2"; total="$3"
+    used_n=$(to_num "$used")
+    avail_n=$(to_num "$avail")
+    total_n=$(to_num "$total")
+    pct=$(to_pct "$used" "$total")
+    printf "%-32s %12s %12s %12s %6s\n" "$node" "$used_n" "$avail_n" "$total_n" "$pct"
+  else
+    set -- $(printf "%s" "$data" | jq -r '.node.fs | "\(.usedBytes) \(.availableBytes) \(.capacityBytes)"')
+    used="$1"; avail="$2"; total="$3"
+    used_g=$(to_gib "$used")
+    avail_g=$(to_gib "$avail")
+    total_g=$(to_gib "$total")
+    pct=$(to_pct "$used" "$total")
+    printf "%-32s %8s %8s %8s %6s\n" "$node" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct"
+  fi
+  imagefs=$(printf "%s" "$data" | jq -r '.node.runtime.imagefs // empty | "\(.usedBytes) \(.availableBytes) \(.capacityBytes) \(.inodesUsed) \(.inodesFree) \(.inodes)"')
+  if [ -n "$imagefs" ]; then
+    set -- $imagefs
+    if [ "$mode" = "inodes" ]; then
+      used="$4"; avail="$5"; total="$6"
+      used_n=$(to_num "$used")
+      avail_n=$(to_num "$avail")
+      total_n=$(to_num "$total")
+      pct=$(to_pct "$used" "$total")
+      printf "%-32s %12s %12s %12s %6s\n" "${node}:imagefs" "$used_n" "$avail_n" "$total_n" "$pct"
+    else
+      used="$1"; avail="$2"; total="$3"
+      used_g=$(to_gib "$used")
+      avail_g=$(to_gib "$avail")
+      total_g=$(to_gib "$total")
+      pct=$(to_pct "$used" "$total")
+      printf "%-32s %8s %8s %8s %6s\n" "${node}:imagefs" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct"
+    fi
+  fi
+  rootfs=$(printf "%s" "$data" | jq -r '.node.runtime.rootfs // empty | "\(.usedBytes) \(.availableBytes) \(.capacityBytes) \(.inodesUsed) \(.inodesFree) \(.inodes)"')
+  if [ -n "$rootfs" ]; then
+    set -- $rootfs
+    if [ "$mode" = "inodes" ]; then
+      used="$4"; avail="$5"; total="$6"
+      used_n=$(to_num "$used")
+      avail_n=$(to_num "$avail")
+      total_n=$(to_num "$total")
+      pct=$(to_pct "$used" "$total")
+      printf "%-32s %12s %12s %12s %6s\n" "${node}:rootfs" "$used_n" "$avail_n" "$total_n" "$pct"
+    else
+      used="$1"; avail="$2"; total="$3"
+      used_g=$(to_gib "$used")
+      avail_g=$(to_gib "$avail")
+      total_g=$(to_gib "$total")
+      pct=$(to_pct "$used" "$total")
+      printf "%-32s %8s %8s %8s %6s\n" "${node}:rootfs" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct"
+    fi
+  fi
+
+done
