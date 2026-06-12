@@ -66,25 +66,29 @@ kubectl node df --inodes
 
 ## Output
 
-By default, sizes are shown in GiB with usage percent. With `-o wide`, `IMG_EVICT_HEADROOM` and
-`NODE_EVICT_HEADROOM` show proximity to the hard eviction threshold in GiB
-(delta = available − threshold), and `IMG_EVICT_HEADROOM%` / `NODE_EVICT_HEADROOM%` show the same
-delta as a percent of capacity (positive means still above the threshold).
-If `imagefs` metrics are missing, `IMG_EVICT_HEADROOM` falls back to `nodefs` metrics.
+Default output shows node filesystem usage in GiB:
 
 ```
-NODE                             USED    AVAIL    TOTAL   USE% IMG_EVICT_HEADROOM NODE_EVICT_HEADROOM IMG_EVICT_HEADROOM% NODE_EVICT_HEADROOM%
-node-1                           72.3G   101.7G   174.0G   42%  +8.1G              +6.4G              +5%                  +4%
-node-2                           18.9G    63.2G    82.1G   23%      -                  -                -                    -
-node-3                            5.4G    20.6G    26.0G   21%      -                  -                -                    -
+NODE                                 USED    AVAIL    TOTAL   USE%
+node-a                              10.2G    36.8G    47.0G    22%
+node-b                              96.5G    50.5G   147.0G    66%
 ```
 
-With `--inodes`, `INODE_EVICT` shows headroom to the inode eviction threshold:
+`--inodes` shows inode usage and inode eviction headroom:
 
 ```
-NODE                          INODE_USED  INODE_FREE INODE_TOTAL   USE% INODE_EVICT
-node-1                               1234      98765      99999     1%  +1234
-node-2                                456      65432      70000     1%  -
+NODE                               INODE_USED   INODE_FREE  INODE_TOTAL   USE%  INODE_EVICT
+node-a                                 146875     24519237     24666112     1%    +23285927
+node-b                                1864229     75232731     77096960     2%    +71377883
+```
+
+`-o wide` adds eviction headroom columns. Headroom is `available - threshold`;
+positive values mean the node is still above the hard eviction threshold.
+
+```
+NODE                                 USED    AVAIL    TOTAL   USE%  IMG_EVICT_HEADROOM  NODE_EVICT_HEADROOM  IMG_EVICT_HEADROOM%  NODE_EVICT_HEADROOM%
+node-a                              10.2G    36.8G    47.0G    22%              +29.8G               +32.1G                 +63%                  +68%
+node-b                              96.5G    50.5G   147.0G    66%              +28.5G               +35.8G                 +19%                  +24%
 ```
 
 ## Notes

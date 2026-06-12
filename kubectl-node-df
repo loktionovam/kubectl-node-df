@@ -12,6 +12,18 @@ fi
 
 mode="bytes"
 wide=0
+parallel="${NODE_DF_PARALLEL:-6}"
+tmpdir="$(mktemp -d)"
+cleanup() {
+  if [ -d "$tmpdir" ]; then
+    rm -r "$tmpdir"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+nodes_file="$tmpdir/nodes"
+: > "$nodes_file"
+have_nodes=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -i|--inodes)
@@ -56,6 +68,10 @@ EOF
       ;;
     --)
       shift
+      if [ "$#" -gt 0 ]; then
+        printf "%s\n" "$@" >> "$nodes_file"
+        have_nodes=1
+      fi
       break
       ;;
     -*)
@@ -63,10 +79,16 @@ EOF
       exit 1
       ;;
     *)
-      break
+      printf "%s\n" "$1" >> "$nodes_file"
+      have_nodes=1
+      shift
       ;;
   esac
 done
+
+if [ "$have_nodes" -eq 0 ]; then
+  kubectl get nodes -o custom-columns=NAME:.metadata.name --no-headers > "$nodes_file"
+fi
 
 to_gib() {
   awk -v b="$1" 'BEGIN { if (b=="null" || b=="") { printf "-"; exit } printf "%.1f", b/1024/1024/1024 }'
@@ -137,22 +159,6 @@ threshold_bytes() {
   '
 }
 
-parallel="${NODE_DF_PARALLEL:-6}"
-tmpdir="$(mktemp -d)"
-cleanup() {
-  if [ -d "$tmpdir" ]; then
-    rm -r "$tmpdir"
-  fi
-}
-trap cleanup EXIT INT TERM
-
-nodes_file="$tmpdir/nodes"
-if [ "$#" -eq 0 ]; then
-  kubectl get nodes -o custom-columns=NAME:.metadata.name --no-headers > "$nodes_file"
-else
-  printf "%s\n" "$@" > "$nodes_file"
-fi
-
 if [ "$mode" = "inodes" ]; then
   print_inode_row "NODE" "INODE_USED" "INODE_FREE" "INODE_TOTAL" "USE%" "INODE_EVICT"
 else
@@ -212,11 +218,11 @@ while IFS= read -r node; do
       inode_evict="-"
     fi
   else
+    img_evict="-"
+    node_evict="-"
+    img_evict_pct="-"
+    node_evict_pct="-"
     if [ "$wide" -eq 1 ]; then
-      img_evict="-"
-      node_evict="-"
-      img_evict_pct="-"
-      node_evict_pct="-"
       if [ -n "$hard_img" ] && [ -n "$img_cap" ] && [ -n "$img_avail" ]; then
         img_thr=$(threshold_bytes "$hard_img" "$img_cap")
         if [ -n "$img_thr" ]; then
