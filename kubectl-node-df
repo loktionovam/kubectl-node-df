@@ -59,7 +59,8 @@ EOF
       break
       ;;
     -*)
-      break
+      echo "Unknown option: $1" >&2
+      exit 1
       ;;
     *)
       break
@@ -69,6 +70,15 @@ done
 
 to_gib() {
   awk -v b="$1" 'BEGIN { if (b=="null" || b=="") { printf "-"; exit } printf "%.1f", b/1024/1024/1024 }'
+}
+
+to_gib_unit() {
+  value=$(to_gib "$1")
+  if [ "$value" = "-" ]; then
+    printf "-"
+  else
+    printf "%sG" "$value"
+  fi
 }
 
 to_gib_signed() {
@@ -85,6 +95,18 @@ to_num() {
 
 to_num_signed() {
   awk -v n="$1" 'BEGIN { if (n=="null" || n=="") { printf "-"; exit } if (n>=0) { printf "+%.0f", n } else { printf "%.0f", n } }'
+}
+
+print_inode_row() {
+  printf "%-32s %12s %12s %12s %6s %12s\n" "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+print_bytes_row() {
+  if [ "$wide" -eq 1 ]; then
+    printf "%-32s %8s %8s %8s %6s %19s %20s %20s %21s\n" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9"
+  else
+    printf "%-32s %8s %8s %8s %6s\n" "$1" "$2" "$3" "$4" "$5"
+  fi
 }
 
 # Convert a kubelet eviction threshold to bytes.
@@ -118,34 +140,33 @@ threshold_bytes() {
 parallel="${NODE_DF_PARALLEL:-6}"
 tmpdir="$(mktemp -d)"
 cleanup() {
-  rm -rf "$tmpdir"
+  if [ -d "$tmpdir" ]; then
+    rm -r "$tmpdir"
+  fi
 }
 trap cleanup EXIT INT TERM
 
 nodes_file="$tmpdir/nodes"
 if [ "$#" -eq 0 ]; then
-  kubectl get nodes -o name | sed 's#node/##' > "$nodes_file"
+  kubectl get nodes -o custom-columns=NAME:.metadata.name --no-headers > "$nodes_file"
 else
   printf "%s\n" "$@" > "$nodes_file"
 fi
 
 if [ "$mode" = "inodes" ]; then
-  printf "%-32s %12s %12s %12s %6s %12s\n" \
-    "NODE" "INODE_USED" "INODE_FREE" "INODE_TOTAL" "USE%" "INODE_EVICT"
+  print_inode_row "NODE" "INODE_USED" "INODE_FREE" "INODE_TOTAL" "USE%" "INODE_EVICT"
 else
-  if [ "$wide" -eq 1 ]; then
-    printf "%-32s %8s %8s %8s %6s %11s %11s %10s %10s\n" \
-      "NODE" "USED" "AVAIL" "TOTAL" "USE%" "IMG_TO_EVICT" "NODE_TO_EVICT" "IMG_TO_EVICT%" "NODE_TO_EVICT%"
-  else
-    printf "%-32s %8s %8s %8s %6s\n" \
-      "NODE" "USED" "AVAIL" "TOTAL" "USE%"
-  fi
+  print_bytes_row "NODE" "USED" "AVAIL" "TOTAL" "USE%" "IMG_EVICT_HEADROOM" "NODE_EVICT_HEADROOM" "IMG_EVICT_HEADROOM%" "NODE_EVICT_HEADROOM%"
 fi
 
+NODE_DF_TMPDIR="$tmpdir"
+export NODE_DF_TMPDIR
+
+# shellcheck disable=SC2016
 xargs -n 1 -P "$parallel" sh -c '
   node="$1"
-  kubectl get --raw "/api/v1/nodes/$node/proxy/stats/summary" > "'"$tmpdir"'"/"$node".summary 2>/dev/null || true
-  kubectl get --raw "/api/v1/nodes/$node/proxy/configz" > "'"$tmpdir"'"/"$node".configz 2>/dev/null || true
+  kubectl get --raw "/api/v1/nodes/$node/proxy/stats/summary" > "$NODE_DF_TMPDIR/$node.summary" 2>/dev/null || true
+  kubectl get --raw "/api/v1/nodes/$node/proxy/configz" > "$NODE_DF_TMPDIR/$node.configz" 2>/dev/null || true
 ' sh < "$nodes_file"
 
 while IFS= read -r node; do
@@ -160,13 +181,9 @@ while IFS= read -r node; do
 
   if [ ! -s "$tmpdir/$node.summary" ]; then
     if [ "$mode" = "inodes" ]; then
-      printf "%-32s %12s %12s %12s %6s %12s\n" "$node" "-" "-" "-" "-" "-"
+      print_inode_row "$node" "-" "-" "-" "-" "-"
     else
-      if [ "$wide" -eq 1 ]; then
-        printf "%-32s %8s %8s %8s %6s %11s %11s %10s %10s\n" "$node" "-" "-" "-" "-" "-" "-" "-" "-"
-      else
-        printf "%-32s %8s %8s %8s %6s\n" "$node" "-" "-" "-" "-"
-      fi
+      print_bytes_row "$node" "-" "-" "-" "-" "-" "-" "-" "-"
     fi
     continue
   fi
@@ -219,71 +236,51 @@ while IFS= read -r node; do
     fi
   fi
   if [ "$mode" = "inodes" ]; then
-    set -- $(printf "%s" "$data" | jq -r '.node.fs | "\(.inodesUsed) \(.inodesFree) \(.inodes)"')
-    used="$1"; avail="$2"; total="$3"
+    fs_values=$(printf "%s" "$data" | jq -r '[.node.fs.inodesUsed, .node.fs.inodesFree, .node.fs.inodes] | @tsv')
+    IFS='	' read -r used avail total <<EOF
+$fs_values
+EOF
     used_n=$(to_num "$used")
     avail_n=$(to_num "$avail")
     total_n=$(to_num "$total")
     pct=$(to_pct "$used" "$total")
-    printf "%-32s %12s %12s %12s %6s %12s\n" "$node" "$used_n" "$avail_n" "$total_n" "$pct" "$inode_evict"
+    print_inode_row "$node" "$used_n" "$avail_n" "$total_n" "$pct" "$inode_evict"
   else
-    set -- $(printf "%s" "$data" | jq -r '.node.fs | "\(.usedBytes) \(.availableBytes) \(.capacityBytes)"')
-    used="$1"; avail="$2"; total="$3"
-    used_g=$(to_gib "$used")
-    avail_g=$(to_gib "$avail")
-    total_g=$(to_gib "$total")
+    fs_values=$(printf "%s" "$data" | jq -r '[.node.fs.usedBytes, .node.fs.availableBytes, .node.fs.capacityBytes] | @tsv')
+    IFS='	' read -r used avail total <<EOF
+$fs_values
+EOF
+    used_g=$(to_gib_unit "$used")
+    avail_g=$(to_gib_unit "$avail")
+    total_g=$(to_gib_unit "$total")
     pct=$(to_pct "$used" "$total")
-    if [ "$wide" -eq 1 ]; then
-      printf "%-32s %8s %8s %8s %6s %11s %11s %10s %10s\n" "$node" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct" "$img_evict" "$node_evict" "$img_evict_pct" "$node_evict_pct"
-    else
-      printf "%-32s %8s %8s %8s %6s\n" "$node" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct"
-    fi
+    print_bytes_row "$node" "$used_g" "$avail_g" "$total_g" "$pct" "$img_evict" "$node_evict" "$img_evict_pct" "$node_evict_pct"
   fi
-  imagefs=$(printf "%s" "$data" | jq -r '.node.runtime.imagefs // empty | "\(.usedBytes) \(.availableBytes) \(.capacityBytes) \(.inodesUsed) \(.inodesFree) \(.inodes)"')
-  if [ -n "$imagefs" ]; then
-    set -- $imagefs
+
+  for fs_name in imagefs rootfs; do
+    runtime_fs=$(printf "%s" "$data" | jq -r --arg fs "$fs_name" '.node.runtime[$fs] // empty | [.usedBytes, .availableBytes, .capacityBytes, .inodesUsed, .inodesFree, .inodes] | @tsv')
+    if [ -z "$runtime_fs" ]; then
+      continue
+    fi
+
+    IFS='	' read -r fs_used fs_avail fs_total fs_inodes_used fs_inodes_free fs_inodes_total <<EOF
+$runtime_fs
+EOF
     if [ "$mode" = "inodes" ]; then
-      used="$4"; avail="$5"; total="$6"
+      used="$fs_inodes_used"; avail="$fs_inodes_free"; total="$fs_inodes_total"
       used_n=$(to_num "$used")
       avail_n=$(to_num "$avail")
       total_n=$(to_num "$total")
       pct=$(to_pct "$used" "$total")
-      printf "%-32s %12s %12s %12s %6s %12s\n" "${node}:imagefs" "$used_n" "$avail_n" "$total_n" "$pct" "-"
+      print_inode_row "${node}:$fs_name" "$used_n" "$avail_n" "$total_n" "$pct" "-"
     else
-      used="$1"; avail="$2"; total="$3"
-      used_g=$(to_gib "$used")
-      avail_g=$(to_gib "$avail")
-      total_g=$(to_gib "$total")
+      used="$fs_used"; avail="$fs_avail"; total="$fs_total"
+      used_g=$(to_gib_unit "$used")
+      avail_g=$(to_gib_unit "$avail")
+      total_g=$(to_gib_unit "$total")
       pct=$(to_pct "$used" "$total")
-      if [ "$wide" -eq 1 ]; then
-        printf "%-32s %8s %8s %8s %6s %11s %11s %10s %10s\n" "${node}:imagefs" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct" "-" "-" "-" "-"
-      else
-        printf "%-32s %8s %8s %8s %6s\n" "${node}:imagefs" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct"
-      fi
+      print_bytes_row "${node}:$fs_name" "$used_g" "$avail_g" "$total_g" "$pct" "-" "-" "-" "-"
     fi
-  fi
-  rootfs=$(printf "%s" "$data" | jq -r '.node.runtime.rootfs // empty | "\(.usedBytes) \(.availableBytes) \(.capacityBytes) \(.inodesUsed) \(.inodesFree) \(.inodes)"')
-  if [ -n "$rootfs" ]; then
-    set -- $rootfs
-    if [ "$mode" = "inodes" ]; then
-      used="$4"; avail="$5"; total="$6"
-      used_n=$(to_num "$used")
-      avail_n=$(to_num "$avail")
-      total_n=$(to_num "$total")
-      pct=$(to_pct "$used" "$total")
-      printf "%-32s %12s %12s %12s %6s %12s\n" "${node}:rootfs" "$used_n" "$avail_n" "$total_n" "$pct" "-"
-    else
-      used="$1"; avail="$2"; total="$3"
-      used_g=$(to_gib "$used")
-      avail_g=$(to_gib "$avail")
-      total_g=$(to_gib "$total")
-      pct=$(to_pct "$used" "$total")
-      if [ "$wide" -eq 1 ]; then
-        printf "%-32s %8s %8s %8s %6s %11s %11s %10s %10s\n" "${node}:rootfs" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct" "-" "-" "-" "-"
-      else
-        printf "%-32s %8s %8s %8s %6s\n" "${node}:rootfs" "${used_g}G" "${avail_g}G" "${total_g}G" "$pct"
-      fi
-    fi
-  fi
+  done
 
 done < "$nodes_file"

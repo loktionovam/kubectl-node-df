@@ -59,23 +59,24 @@ Examples:
 
 ```bash
 kubectl node df
+kubectl node df -o wide
 kubectl node df node-1 node-2
 kubectl node df --inodes
 ```
 
 ## Output
 
-By default, sizes are shown in GiB with usage percent. With `-o wide`, `IMG_TO_EVICT` and
-`NODE_TO_EVICT` show proximity to the hard eviction threshold in GiB
-(delta = available − threshold), and `IMG_TO_EVICT%` / `NODE_TO_EVICT%` show the same
+By default, sizes are shown in GiB with usage percent. With `-o wide`, `IMG_EVICT_HEADROOM` and
+`NODE_EVICT_HEADROOM` show proximity to the hard eviction threshold in GiB
+(delta = available − threshold), and `IMG_EVICT_HEADROOM%` / `NODE_EVICT_HEADROOM%` show the same
 delta as a percent of capacity (positive means still above the threshold).
-If `imagefs` metrics are missing, `IMG_EVICT` falls back to `nodefs` metrics.
+If `imagefs` metrics are missing, `IMG_EVICT_HEADROOM` falls back to `nodefs` metrics.
 
 ```
-NODE                             USED    AVAIL    TOTAL   USE% IMG_TO_EVICT NODE_TO_EVICT IMG_TO_EVICT% NODE_TO_EVICT%
-node-1                           72.3G   101.7G   174.0G   42%  +8.1G       +6.4G       +5%           +4%
-node-2                             18.9G    63.2G    82.1G   23%  - -
-node-3                           5.4G    20.6G    26.0G   21%  - -
+NODE                             USED    AVAIL    TOTAL   USE% IMG_EVICT_HEADROOM NODE_EVICT_HEADROOM IMG_EVICT_HEADROOM% NODE_EVICT_HEADROOM%
+node-1                           72.3G   101.7G   174.0G   42%  +8.1G              +6.4G              +5%                  +4%
+node-2                           18.9G    63.2G    82.1G   23%      -                  -                -                    -
+node-3                            5.4G    20.6G    26.0G   21%      -                  -                -                    -
 ```
 
 With `--inodes`, `INODE_EVICT` shows headroom to the inode eviction threshold:
@@ -83,7 +84,7 @@ With `--inodes`, `INODE_EVICT` shows headroom to the inode eviction threshold:
 ```
 NODE                          INODE_USED  INODE_FREE INODE_TOTAL   USE% INODE_EVICT
 node-1                               1234      98765      99999     1%  +1234
-node-2                               456      65432      70000     1%  - -
+node-2                                456      65432      70000     1%  -
 ```
 
 ## Notes
