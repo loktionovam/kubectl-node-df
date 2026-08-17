@@ -17,17 +17,17 @@ spec:
     Summary API. Access to kubelet configz is optional and is used to display
     eviction threshold headroom.
   platforms:
-    - selector:
-        matchExpressions:
-          - key: os
-            operator: In
-            values:
-              - darwin
-              - linux
-      {{addURIAndSha "https://github.com/loktionovam/kubectl-node-df/archive/{{ .TagName }}.tar.gz" .TagName }}
-      files:
-        - from: kubectl-node-df-*/kubectl-node_df
-          to: .
-        - from: kubectl-node-df-*/LICENSE
-          to: .
-      bin: kubectl-node_df
+  - selector:
+      matchExpressions:
+      - key: os
+        operator: In
+        values:
+        - darwin
+        - linux
+    {{addURIAndSha "https://github.com/loktionovam/kubectl-node-df/archive/{{ .TagName }}.tar.gz" .TagName }}
+    files:
+    - from: kubectl-node-df-*/kubectl-node_df
+      to: .
+    - from: kubectl-node-df-*/LICENSE
+      to: .
+    bin: kubectl-node_df
