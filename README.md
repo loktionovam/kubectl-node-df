@@ -109,6 +109,15 @@ Run syntax checks, ShellCheck, and functional tests with a mocked Kubernetes API
 make check
 ```
 
+Run the live-cluster smoke test against the active kubeconfig context:
+
+```bash
+EXPECTED_KUBERNETES_VERSION=v1.36.1 make smoke
+```
+
+CI runs this smoke test with digest-pinned `kind` images for every currently
+supported Kubernetes minor release.
+
 ## License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE).

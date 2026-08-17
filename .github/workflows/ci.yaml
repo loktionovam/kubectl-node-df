@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,3 +22,38 @@ jobs:
 
       - name: Run checks
         run: make check
+
+  smoke:
+    name: Kubernetes ${{ matrix.kubernetes }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kubernetes: v1.34.8
+            node_image: kindest/node:v1.34.8@sha256:02722c2dedddcfc00febf5d27fbeb9b7b2c14294c82109ff4a85d89ac9ba3256
+          - kubernetes: v1.35.5
+            node_image: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
+          - kubernetes: v1.36.1
+            node_image: kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install --yes jq
+
+      - name: Create kind cluster
+        uses: helm/kind-action@0b5c88445f37b7e12a2ce1ecca7805b9046a74db # v1
+        with:
+          version: v0.32.0
+          node_image: ${{ matrix.node_image }}
+          kubectl_version: ${{ matrix.kubernetes }}
+          cluster_name: node-df
+          wait: 120s
+
+      - name: Run live-cluster smoke test
+        env:
+          EXPECTED_KUBERNETES_VERSION: ${{ matrix.kubernetes }}
+        run: make smoke
