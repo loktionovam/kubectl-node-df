@@ -1,0 +1,63 @@
+#!/bin/sh
+set -eu
+
+case "$*" in
+  "get nodes -o custom-columns=NAME:.metadata.name --no-headers")
+    printf '%s\n' node-a node-b
+    ;;
+  "get --raw /api/v1/nodes/node-a/proxy/stats/summary")
+    cat <<'EOF'
+{
+  "node": {
+    "fs": {
+      "usedBytes": 10737418240,
+      "availableBytes": 32212254720,
+      "capacityBytes": 42949672960,
+      "inodesUsed": 100,
+      "inodesFree": 900,
+      "inodes": 1000
+    },
+    "runtime": {
+      "imageFs": {
+        "usedBytes": 5368709120,
+        "availableBytes": 16106127360,
+        "capacityBytes": 21474836480,
+        "inodesUsed": 50,
+        "inodesFree": 150,
+        "inodes": 200
+      },
+      "containerFs": {
+        "usedBytes": 1073741824,
+        "capacityBytes": 4294967296,
+        "inodesUsed": 10,
+        "inodes": 100
+      }
+    }
+  }
+}
+EOF
+    ;;
+  "get --raw /api/v1/nodes/node-a/proxy/configz")
+    cat <<'EOF'
+{
+  "kubeletconfig": {
+    "evictionHard": {
+      "imagefs.available": "10%",
+      "nodefs.available": "4Gi",
+      "nodefs.inodesFree": "10%"
+    }
+  }
+}
+EOF
+    ;;
+  "get --raw /api/v1/nodes/node-b/proxy/stats/summary")
+    printf '{invalid json\n'
+    ;;
+  "get --raw /api/v1/nodes/node-b/proxy/configz")
+    printf '{invalid json\n'
+    ;;
+  *)
+    echo "Unexpected kubectl arguments: $*" >&2
+    exit 1
+    ;;
+esac

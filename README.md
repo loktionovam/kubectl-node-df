@@ -2,7 +2,8 @@
 
 `kubectl` plugin that prints node filesystem usage from the kubelet Summary API.
 
-It shows `node.fs` and, when available, `node.runtime.imagefs` and `node.runtime.rootfs`,
+It shows `node.fs` and, when available, `node.runtime.imageFs` and
+`node.runtime.containerFs`,
 and prints eviction thresholds from the kubelet `configz` endpoint.
 
 ## Requirements
@@ -10,18 +11,20 @@ and prints eviction thresholds from the kubelet `configz` endpoint.
 - `kubectl` in `PATH` with a configured `KUBECONFIG`
 - `jq`
 - Access to kubelet Summary API via `kubectl get --raw` (RBAC / API server)
-- Access to kubelet `configz` via `kubectl get --raw` (RBAC / API server)
+- Access to kubelet `configz` via `kubectl get --raw` for eviction headroom
+  (optional; unavailable values are displayed as `-`)
 
 ## Installation
 
-Make the file executable and place it in your `PATH`:
+### Krew
 
 ```bash
-chmod +x kubectl-node-df
-sudo mv kubectl-node-df /usr/local/bin/
+kubectl krew install node-df
 ```
 
-Or via `make` (defaults to `$HOME/.local/bin` without sudo):
+### From source
+
+Install the plugin to `$HOME/.local/bin`:
 
 ```bash
 make install
@@ -42,7 +45,7 @@ make uninstall
 ## Usage
 
 ```bash
-kubectl node df [--inodes] [-o wide] [NODE...]
+kubectl node-df [--inodes] [-o wide] [NODE...]
 ```
 
 Options:
@@ -58,10 +61,10 @@ Env:
 Examples:
 
 ```bash
-kubectl node df
-kubectl node df -o wide
-kubectl node df node-1 node-2
-kubectl node df --inodes
+kubectl node-df
+kubectl node-df -o wide
+kubectl node-df node-1 node-2
+kubectl node-df --inodes
 ```
 
 ## Output
@@ -96,4 +99,16 @@ node-b                              96.5G    50.5G   147.0G    66%              
 - The plugin uses `kubectl get --raw /api/v1/nodes/<node>/proxy/stats/summary`.
 - Eviction thresholds are read from `kubectl get --raw /api/v1/nodes/<node>/proxy/configz` (hard thresholds).
 - If a node does not respond, the row shows `-`.
-- `imagefs` and `rootfs` output depends on the container runtime configuration.
+- `imagefs` and `containerfs` output depends on the container runtime configuration.
+
+## Development
+
+Run syntax checks, ShellCheck, and functional tests with a mocked Kubernetes API:
+
+```bash
+make check
+```
+
+## License
+
+GNU General Public License v3.0. See [LICENSE](LICENSE).

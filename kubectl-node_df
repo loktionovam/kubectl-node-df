@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
 set -eu
 
 if ! command -v kubectl >/dev/null 2>&1; then
@@ -13,13 +14,22 @@ fi
 mode="bytes"
 wide=0
 parallel="${NODE_DF_PARALLEL:-6}"
+case "$parallel" in
+  ""|*[!0-9]*|0)
+    echo "NODE_DF_PARALLEL must be a positive integer" >&2
+    exit 1
+    ;;
+esac
+
 tmpdir="$(mktemp -d)"
 cleanup() {
   if [ -d "$tmpdir" ]; then
     rm -r "$tmpdir"
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 nodes_file="$tmpdir/nodes"
 : > "$nodes_file"
@@ -45,7 +55,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     -h|--help)
       cat <<'EOF'
-Usage: kubectl node df [--inodes] [-o wide] [NODE...]
+Usage: kubectl node-df [--inodes] [-o wide] [NODE...]
 
 Shows node filesystem usage from kubelet Summary API and eviction thresholds
 from kubelet configz.
@@ -59,10 +69,10 @@ Env:
   NODE_DF_PARALLEL   Number of parallel requests (default: 6)
 
 Examples:
-  kubectl node df
-  kubectl node df -o wide
-  kubectl node df node-1 node-2
-  kubectl node df --inodes
+  kubectl node-df
+  kubectl node-df -o wide
+  kubectl node-df node-1 node-2
+  kubectl node-df --inodes
 EOF
       exit 0
       ;;
@@ -89,6 +99,15 @@ done
 if [ "$have_nodes" -eq 0 ]; then
   kubectl get nodes -o custom-columns=NAME:.metadata.name --no-headers > "$nodes_file"
 fi
+
+while IFS= read -r node; do
+  case "$node" in
+    ""|*[!a-z0-9.-]*|[.-]*|*[.-])
+      echo "Invalid node name: $node" >&2
+      exit 1
+      ;;
+  esac
+done < "$nodes_file"
 
 to_gib() {
   awk -v b="$1" 'BEGIN { if (b=="null" || b=="") { printf "-"; exit } printf "%.1f", b/1024/1024/1024 }'
@@ -132,17 +151,19 @@ print_bytes_row() {
 }
 
 # Convert a kubelet eviction threshold to bytes.
-# Supports percentage (e.g. "10%") and Ki/Mi/Gi values (e.g. "100Mi").
+# Supports percentage (e.g. "10%") and Ki/Mi/Gi/Ti values (e.g. "100Mi").
 # Returns empty output for unsupported formats or missing inputs.
 threshold_bytes() {
   awk -v thr="$1" -v cap="$2" '
     BEGIN {
       if (thr=="" || thr=="null" || cap=="" || cap=="null") { print ""; exit }
-      if (thr ~ /%$/) {
+      if (thr ~ /^[0-9]+([.][0-9]+)?%$/) {
         sub(/%$/, "", thr)
         print cap * thr / 100
         exit
       }
+
+      if (thr !~ /^[0-9]+([.][0-9]+)?(Ki|Mi|Gi|Ti)$/) { print ""; exit }
 
       num = thr
       unit = thr
@@ -152,6 +173,7 @@ threshold_bytes() {
       if (unit=="Ki") mult=1024
       else if (unit=="Mi") mult=1048576
       else if (unit=="Gi") mult=1073741824
+      else if (unit=="Ti") mult=1099511627776
       else { print ""; exit }
 
       print num * mult
@@ -169,23 +191,32 @@ NODE_DF_TMPDIR="$tmpdir"
 export NODE_DF_TMPDIR
 
 # shellcheck disable=SC2016
-xargs -n 1 -P "$parallel" sh -c '
-  node="$1"
-  kubectl get --raw "/api/v1/nodes/$node/proxy/stats/summary" > "$NODE_DF_TMPDIR/$node.summary" 2>/dev/null || true
-  kubectl get --raw "/api/v1/nodes/$node/proxy/configz" > "$NODE_DF_TMPDIR/$node.configz" 2>/dev/null || true
-' sh < "$nodes_file"
+if [ -s "$nodes_file" ]; then
+  xargs -n 1 -P "$parallel" sh -c '
+    node="$1"
+    kubectl get --raw "/api/v1/nodes/$node/proxy/stats/summary" > "$NODE_DF_TMPDIR/$node.summary" 2>/dev/null || true
+    kubectl get --raw "/api/v1/nodes/$node/proxy/configz" > "$NODE_DF_TMPDIR/$node.configz" 2>/dev/null || true
+  ' sh < "$nodes_file"
+fi
 
 while IFS= read -r node; do
   hard_img=""
   hard_node=""
   hard_inodes=""
   if [ -s "$tmpdir/$node.configz" ]; then
-    hard_img=$(jq -r '.kubeletconfig.evictionHard["imagefs.available"] // empty' "$tmpdir/$node.configz")
-    hard_node=$(jq -r '.kubeletconfig.evictionHard["nodefs.available"] // empty' "$tmpdir/$node.configz")
-    hard_inodes=$(jq -r '.kubeletconfig.evictionHard["nodefs.inodesFree"] // empty' "$tmpdir/$node.configz")
+    if config_values=$(jq -r '[
+      .kubeletconfig.evictionHard["imagefs.available"] // "",
+      .kubeletconfig.evictionHard["nodefs.available"] // "",
+      .kubeletconfig.evictionHard["nodefs.inodesFree"] // ""
+    ] | join("|")' "$tmpdir/$node.configz" 2>/dev/null); then
+      IFS='|' read -r hard_img hard_node hard_inodes <<EOF
+$config_values
+EOF
+    fi
   fi
 
-  if [ ! -s "$tmpdir/$node.summary" ]; then
+  if [ ! -s "$tmpdir/$node.summary" ] ||
+     ! jq -e '.node.fs | type == "object"' "$tmpdir/$node.summary" >/dev/null 2>&1; then
     if [ "$mode" = "inodes" ]; then
       print_inode_row "$node" "-" "-" "-" "-" "-"
     else
@@ -193,17 +224,27 @@ while IFS= read -r node; do
     fi
     continue
   fi
-  data="$(cat "$tmpdir/$node.summary")"
-  node_avail=$(printf "%s" "$data" | jq -r '.node.fs.availableBytes // empty')
-  node_cap=$(printf "%s" "$data" | jq -r '.node.fs.capacityBytes // empty')
-  img_avail=$(printf "%s" "$data" | jq -r '.node.runtime.imagefs.availableBytes // empty')
-  img_cap=$(printf "%s" "$data" | jq -r '.node.runtime.imagefs.capacityBytes // empty')
+
+  summary_values=$(jq -r '[
+    .node.fs.usedBytes // "",
+    .node.fs.availableBytes // "",
+    .node.fs.capacityBytes // "",
+    .node.fs.inodesUsed // "",
+    .node.fs.inodesFree // "",
+    .node.fs.inodes // "",
+    .node.runtime.imageFs.availableBytes // "",
+    .node.runtime.imageFs.capacityBytes // ""
+  ] | join("|")' "$tmpdir/$node.summary")
+  IFS='|' read -r used avail total inode_used inode_free inode_total img_avail img_cap <<EOF
+$summary_values
+EOF
+
+  node_avail="$avail"
+  node_cap="$total"
   if [ -z "$img_avail" ] || [ -z "$img_cap" ]; then
     img_avail="$node_avail"
     img_cap="$node_cap"
   fi
-  inode_free=$(printf "%s" "$data" | jq -r '.node.fs.inodesFree // empty')
-  inode_total=$(printf "%s" "$data" | jq -r '.node.fs.inodes // empty')
 
   if [ "$mode" = "inodes" ]; then
     if [ -n "$hard_inodes" ] && [ -n "$inode_total" ]; then
@@ -242,20 +283,15 @@ while IFS= read -r node; do
     fi
   fi
   if [ "$mode" = "inodes" ]; then
-    fs_values=$(printf "%s" "$data" | jq -r '[.node.fs.inodesUsed, .node.fs.inodesFree, .node.fs.inodes] | @tsv')
-    IFS='	' read -r used avail total <<EOF
-$fs_values
-EOF
+    used="$inode_used"
+    avail="$inode_free"
+    total="$inode_total"
     used_n=$(to_num "$used")
     avail_n=$(to_num "$avail")
     total_n=$(to_num "$total")
     pct=$(to_pct "$used" "$total")
     print_inode_row "$node" "$used_n" "$avail_n" "$total_n" "$pct" "$inode_evict"
   else
-    fs_values=$(printf "%s" "$data" | jq -r '[.node.fs.usedBytes, .node.fs.availableBytes, .node.fs.capacityBytes] | @tsv')
-    IFS='	' read -r used avail total <<EOF
-$fs_values
-EOF
     used_g=$(to_gib_unit "$used")
     avail_g=$(to_gib_unit "$avail")
     total_g=$(to_gib_unit "$total")
@@ -263,13 +299,25 @@ EOF
     print_bytes_row "$node" "$used_g" "$avail_g" "$total_g" "$pct" "$img_evict" "$node_evict" "$img_evict_pct" "$node_evict_pct"
   fi
 
-  for fs_name in imagefs rootfs; do
-    runtime_fs=$(printf "%s" "$data" | jq -r --arg fs "$fs_name" '.node.runtime[$fs] // empty | [.usedBytes, .availableBytes, .capacityBytes, .inodesUsed, .inodesFree, .inodes] | @tsv')
+  for fs_entry in imageFs:imagefs containerFs:containerfs; do
+    runtime_key=${fs_entry%%:*}
+    fs_name=${fs_entry#*:}
+    runtime_fs=$(jq -r --arg fs "$runtime_key" '
+      .node.runtime[$fs] // empty |
+      [
+        .usedBytes // "",
+        .availableBytes // "",
+        .capacityBytes // "",
+        .inodesUsed // "",
+        .inodesFree // "",
+        .inodes // ""
+      ] | join("|")
+    ' "$tmpdir/$node.summary")
     if [ -z "$runtime_fs" ]; then
       continue
     fi
 
-    IFS='	' read -r fs_used fs_avail fs_total fs_inodes_used fs_inodes_free fs_inodes_total <<EOF
+    IFS='|' read -r fs_used fs_avail fs_total fs_inodes_used fs_inodes_free fs_inodes_total <<EOF
 $runtime_fs
 EOF
     if [ "$mode" = "inodes" ]; then
