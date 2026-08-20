@@ -118,6 +118,20 @@ EXPECTED_KUBERNETES_VERSION=v1.36.1 make smoke
 CI runs this smoke test with digest-pinned `kind` images for every currently
 supported Kubernetes minor release.
 
+## Releasing
+
+Create and push a semantic version tag after the target commit passes CI:
+
+```bash
+git tag -a v0.1.2 -m "v0.1.2"
+git push origin v0.1.2
+```
+
+The `Krew release` workflow runs the local checks, renders `.krew.yaml` for the
+tag, calculates the archive checksum, and asks `krew-release-bot` to open the
+corresponding update pull request in `kubernetes-sigs/krew-index`. No repository
+secret is required.
+
 ## License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE).

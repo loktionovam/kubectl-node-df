@@ -1,0 +1,27 @@
+name: Krew release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  update-krew-index:
+    name: Update Krew index
+    if: github.repository == 'loktionovam/kubectl-node-df'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes jq shellcheck
+
+      - name: Run checks
+        run: make check
+
+      - name: Update plugin in Krew index
+        uses: rajatjindal/krew-release-bot@c970b8a8f6dbc2f2285a26e3ae160903b87002c3 # v0.0.51
